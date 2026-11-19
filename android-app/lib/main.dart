@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart' show CupertinoIcons, CupertinoTabBar;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show TextInputFormatter;
 
 import 'db.dart';
 import 'models.dart';
@@ -735,6 +736,24 @@ class ItemEditor extends StatefulWidget {
   State<ItemEditor> createState() => _ItemEditorState();
 }
 
+/// Enter on a "- " line starts the next bullet; Enter on an empty bullet ends the list.
+/// Same markdown as the desktop MarkdownEditor (handle_list_enter).
+TextEditingValue continueBullet(TextEditingValue old, TextEditingValue value) {
+  final at = value.selection.baseOffset;
+  final typedNewline = value.text.length == old.text.length + 1 && at > 0 && value.text[at - 1] == '\n' &&
+      value.text.replaceRange(at - 1, at, '') == old.text;
+  if (!typedNewline) return value;
+  final lineStart = value.text.lastIndexOf('\n', at - 2) + 1;
+  final line = value.text.substring(lineStart, at - 1);
+  if (!line.startsWith('- ') && !line.startsWith('• ')) return value;
+  if (line.substring(2).trim().isEmpty) {
+    return TextEditingValue(
+        text: value.text.replaceRange(lineStart, at, ''), selection: TextSelection.collapsed(offset: lineStart));
+  }
+  return TextEditingValue(
+      text: value.text.replaceRange(at, at, '- '), selection: TextSelection.collapsed(offset: at + 2));
+}
+
 class _ItemEditorState extends State<ItemEditor> {
   late final content = TextEditingController(text: widget.item?.content);
   late final description = TextEditingController(text: widget.item?.description);
@@ -806,6 +825,7 @@ class _ItemEditorState extends State<ItemEditor> {
             padding: const EdgeInsets.only(left: 36),
             child: TextField(
               controller: description,
+              inputFormatters: [TextInputFormatter.withFunction(continueBullet)],
               decoration: InputDecoration(
                 hintText: 'Add a description…',
                 border: InputBorder.none,
