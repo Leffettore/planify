@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons, CupertinoTabBar;
 import 'package:flutter/material.dart';
 
 import 'db.dart';
@@ -156,8 +157,127 @@ class PlanifyApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: _theme(Brightness.light),
         darkTheme: _theme(Brightness.dark),
-        home: SidebarPage(state: state),
+        home: HomeShell(state: state),
       );
+}
+
+// ---------------------------------------------------------------------------
+// iOS-style tab bar that stays visible: pages open in a nested navigator above it.
+
+class HomeShell extends StatefulWidget {
+  final AppState state;
+  const HomeShell({super.key, required this.state});
+
+  @override
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  final _nav = GlobalKey<NavigatorState>();
+  int? _tab; // the tab whose page is open; null on the projects page or a project
+  late final _observer = _TabObserver(() => setState(() => _tab = null));
+
+  void _select(int i, TaskView v) {
+    setState(() => _tab = i);
+    _nav.currentState!.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => TaskListPage(state: widget.state, view: v)),
+      (r) => r.isFirst,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = Pal.of(context);
+    final state = widget.state;
+    return Scaffold(
+      extendBody: true, // pages scroll under the translucent, blurred bar, as on iOS
+      bottomNavigationBar: ListenableBuilder(
+        listenable: state,
+        builder: (context, _) {
+          final List<(IconData, IconData, String, Color, TaskView)> tabs = [
+            (CupertinoIcons.tray, CupertinoIcons.tray_fill, 'Inbox', pal.inbox, ProjectView(state.inbox.id)),
+            (CupertinoIcons.star, CupertinoIcons.star_fill, 'Today', todayColor, const TodayView()),
+            (CupertinoIcons.calendar, CupertinoIcons.calendar, 'Scheduled', pal.scheduled, const ScheduledView()),
+            (CupertinoIcons.checkmark_circle, CupertinoIcons.checkmark_circle_fill, 'Completed', pal.completed,
+                const CompletedView()),
+          ];
+          // iOS badges are red; completed tasks need no attention, so that tab gets none.
+          Widget badged(IconData icon, TaskView view) {
+            final n = view is CompletedView ? 0 : state.count(view);
+            return Badge(
+              label: Text('$n'),
+              isLabelVisible: n > 0,
+              backgroundColor: const Color(0xFFFF3B30),
+              textColor: Colors.white,
+              child: Icon(icon),
+            );
+          }
+
+          // Floating capsule, like the iOS 26 tab bar.
+          final radius = BorderRadius.circular(32);
+          return SafeArea(
+            top: false,
+            minimum: const EdgeInsets.only(bottom: 8),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              decoration: BoxDecoration(
+                borderRadius: radius,
+                border: Border.all(color: pal.border, width: 0.5),
+                boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 24, offset: Offset(0, 8))],
+              ),
+              child: ClipRRect(
+                borderRadius: radius,
+                // The bar adds the system inset itself; the capsule already sits above it.
+                child: MediaQuery.removePadding(
+                  context: context,
+                  removeBottom: true,
+                  child: CupertinoTabBar(
+                    currentIndex: _tab ?? 0,
+                    // No tab is selected on the projects page, so the active color matches the inactive gray.
+                    activeColor: _tab == null ? pal.dim : tabs[_tab!].$4,
+                    inactiveColor: pal.dim,
+                    backgroundColor: pal.sidebar.withValues(alpha: 0.8),
+                    border: null,
+                    height: 60,
+                    iconSize: 26,
+                    onTap: (i) => _select(i, tabs[i].$5),
+                    items: [
+                      for (final (i, (icon, activeIcon, label, _, view)) in tabs.indexed)
+                        BottomNavigationBarItem(
+                          label: label,
+                          icon: badged(icon, view),
+                          activeIcon: badged(_tab == i ? activeIcon : icon, view),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+      // Android back pops the nested navigator before leaving the app.
+      body: NavigatorPopHandler(
+        onPopWithResult: (_) => _nav.currentState!.maybePop(),
+        child: Navigator(
+          key: _nav,
+          observers: [_observer],
+          onGenerateRoute: (_) => MaterialPageRoute(builder: (_) => SidebarPage(state: state)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Clears the selected tab when the user goes back to the projects page.
+class _TabObserver extends NavigatorObserver {
+  final VoidCallback onHome;
+  _TabObserver(this.onHome);
+
+  @override
+  void didPop(Route route, Route? previousRoute) {
+    if (previousRoute?.isFirst ?? false) onHome();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,49 +296,14 @@ class SidebarPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: pal.sidebar,
       body: SafeArea(
+        bottom: false, // the list scrolls under the tab bar; its padding clears it
         child: ListenableBuilder(
           listenable: state,
           builder: (context, _) {
             final projects = state.projects.where((p) => !p.inbox).toList();
             return ListView(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+              padding: EdgeInsets.fromLTRB(12, 4, 12, 24 + MediaQuery.paddingOf(context).bottom),
               children: [
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  childAspectRatio: 2.4,
-                  children: [
-                    FilterTile(
-                        icon: Icons.inbox_outlined,
-                        label: 'Inbox',
-                        color: pal.inbox,
-                        count: state.count(ProjectView(state.inbox.id)),
-                        onTap: () => _open(context, ProjectView(state.inbox.id))),
-                    FilterTile(
-                        icon: Icons.star_border_rounded,
-                        label: 'Today',
-                        color: todayColor,
-                        count: state.count(const TodayView()),
-                        dot: state.hasOverdue,
-                        onTap: () => _open(context, const TodayView())),
-                    FilterTile(
-                        icon: Icons.calendar_month_outlined,
-                        label: 'Scheduled',
-                        color: pal.scheduled,
-                        count: state.count(const ScheduledView()),
-                        onTap: () => _open(context, const ScheduledView())),
-                    FilterTile(
-                        icon: Icons.task_alt_rounded,
-                        label: 'Completed',
-                        color: pal.completed,
-                        count: state.count(const CompletedView()),
-                        onTap: () => _open(context, const CompletedView())),
-                  ],
-                ),
-                const SizedBox(height: 16),
                 SectionHeader(
                   title: 'On This Device',
                   trailing: IconButton(
@@ -262,62 +347,6 @@ class SidebarPage extends StatelessWidget {
 }
 
 String _countLabel(int n) => n == 0 ? '' : '$n';
-
-class FilterTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final int count;
-  final bool dot;
-  final VoidCallback onTap;
-
-  const FilterTile({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.count,
-    required this.onTap,
-    this.dot = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bold = TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 15);
-    return Material(
-      color: color.withValues(alpha: 0.15),
-      borderRadius: BorderRadius.circular(9),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(9),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                Icon(icon, color: color, size: 18),
-                const Spacer(),
-                Text(_countLabel(count), style: bold),
-              ]),
-              const Spacer(),
-              Row(children: [
-                Text(label, style: bold),
-                const Spacer(),
-                if (dot)
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(color: Color(0xFFE5534B), shape: BoxShape.circle),
-                  ),
-              ]),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// Planify's project icon: a colored ring around a filled dot.
 class ProjectDot extends StatelessWidget {
@@ -493,7 +522,7 @@ class _TaskListPageState extends State<TaskListPage> {
           body: groups.isEmpty
               ? EmptyState(view: view)
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
+                  padding: EdgeInsets.fromLTRB(12, 4, 12, 96 + MediaQuery.paddingOf(context).bottom),
                   children: [
                     for (final (key, items) in groups) ...[
                       if (key != null) ...[
@@ -514,7 +543,11 @@ class _TaskListPageState extends State<TaskListPage> {
                 ),
           floatingActionButton: view is CompletedView
               ? null
-              : FloatingActionButton(tooltip: 'Add task', onPressed: _editItem, child: const Icon(Icons.add)),
+              // Lift the button above the translucent tab bar the page extends under.
+              : Padding(
+                  padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
+                  child: FloatingActionButton(tooltip: 'Add task', onPressed: _editItem, child: const Icon(Icons.add)),
+                ),
         );
       },
     );
