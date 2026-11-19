@@ -33,6 +33,25 @@ void main() {
     expect(ids(itemsFor(const ProjectView('p'), all, now)), ['overdue', 'today-p1', 'today', 'nodate']);
   });
 
+  test('completed view lists checked items, newest first', () {
+    final a = item('a', checked: true)..completedAt = DateTime(2026, 11, 1);
+    final b = item('b', checked: true)..completedAt = DateTime(2026, 11, 5);
+    expect(ids(itemsFor(const CompletedView(), [...all, a, b], now)), ['b', 'a', 'done']);
+  });
+
+  test('today groups into overdue then today', () {
+    final g = groupItems(const TodayView(), itemsFor(const TodayView(), all, now), now);
+    expect(g.map((e) => '${e.$1}: ${ids(e.$2)}').toList(), [
+      'overdue: [overdue]',
+      '${DateTime(2026, 11, 19)}: [today-p1, today]',
+    ]);
+  });
+
+  test('project view has a single headerless group', () {
+    final g = groupItems(const ProjectView('p'), itemsFor(const ProjectView('p'), all, now), now);
+    expect([g.length, g.single.$1], [1, null]);
+  });
+
   test('item round-trips through a db map', () {
     final i = item('x', due: DateTime(2026, 2, 3), priority: 3, checked: true);
     final back = Item.fromMap(i.toMap());

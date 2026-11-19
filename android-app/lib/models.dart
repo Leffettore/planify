@@ -81,6 +81,10 @@ class ScheduledView extends TaskView {
   const ScheduledView();
 }
 
+class CompletedView extends TaskView {
+  const CompletedView();
+}
+
 class ProjectView extends TaskView {
   final String projectId;
   const ProjectView(this.projectId);
@@ -91,12 +95,17 @@ DateTime dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 /// Items for [view], open tasks only unless [showCompleted]. Today includes overdue.
 List<Item> itemsFor(TaskView view, List<Item> all, DateTime now, {bool showCompleted = false}) {
   final today = dateOnly(now);
+  if (view is CompletedView) {
+    return all.where((i) => i.checked).toList()
+      ..sort((a, b) => (b.completedAt ?? b.addedAt).compareTo(a.completedAt ?? a.addedAt));
+  }
   final out = all.where((i) {
     if (i.checked && !showCompleted) return false;
     return switch (view) {
       TodayView() => i.due != null && !i.due!.isAfter(today),
       ScheduledView() => i.due != null && i.due!.isAfter(today),
       ProjectView(:final projectId) => i.projectId == projectId,
+      CompletedView() => false,
     };
   }).toList();
   out.sort((a, b) {
@@ -111,4 +120,26 @@ List<Item> itemsFor(TaskView view, List<Item> all, DateTime now, {bool showCompl
     return a.addedAt.compareTo(b.addedAt);
   });
   return out;
+}
+
+/// Section headers like Planify's: Today splits Overdue/Today, Scheduled groups by
+/// day, Completed by completion day. Group key: 'overdue', or a day; null = no header.
+List<(Object?, List<Item>)> groupItems(TaskView view, List<Item> sorted, DateTime now) {
+  final today = dateOnly(now);
+  Object? key(Item i) => switch (view) {
+        TodayView() => i.due!.isBefore(today) ? 'overdue' : today,
+        ScheduledView() => i.due,
+        CompletedView() => dateOnly(i.completedAt ?? i.addedAt),
+        ProjectView() => null,
+      };
+  final groups = <(Object?, List<Item>)>[];
+  for (final i in sorted) {
+    final k = key(i);
+    if (groups.isNotEmpty && groups.last.$1 == k) {
+      groups.last.$2.add(i);
+    } else {
+      groups.add((k, [i]));
+    }
+  }
+  return groups;
 }
