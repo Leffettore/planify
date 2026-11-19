@@ -412,6 +412,7 @@ class _TaskListPageState extends State<TaskListPage> {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
+      useRootNavigator: true, // above the tab bar, which lives outside the nested navigator
       builder: (_) => ItemEditor(
         item: item,
         projects: state.projects,
