@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show TextInputFormatter;
 
 import 'db.dart';
 import 'models.dart';
+import 'sync.dart';
 
 // Planify's project palette (core/Utils/Util.vala get_colors).
 const projectColors = <String, Color>{
@@ -39,32 +40,39 @@ const destructive = Color(0xFFE01B24);
 class Pal {
   final bool dark;
   const Pal(this.dark);
-  static Pal of(BuildContext c) => Pal(Theme.of(c).brightness == Brightness.dark);
+  static Pal of(BuildContext c) =>
+      Pal(Theme.of(c).brightness == Brightness.dark);
 
   Color get window => dark ? const Color(0xFF0C0D12) : const Color(0xFFF9F9F9);
   Color get sidebar => dark ? const Color(0xFF14151A) : const Color(0xFFF3F4F6);
   Color get popover => dark ? const Color(0xFF16171D) : Colors.white;
   Color get border => dark ? const Color(0xFF2D2F35) : const Color(0xFFDCDFE3);
-  Color get upcomingBg => dark ? const Color(0xFF2A2D34) : const Color(0xFFF0F1F3);
-  Color get upcomingFg => dark ? const Color(0xFFE6E9EF) : const Color(0xFF2D2E32);
+  Color get upcomingBg =>
+      dark ? const Color(0xFF2A2D34) : const Color(0xFFF0F1F3);
+  Color get upcomingFg =>
+      dark ? const Color(0xFFE6E9EF) : const Color(0xFF2D2E32);
   Color get dim => dark ? Colors.white54 : Colors.black45;
   Color get inbox => dark ? const Color(0xFF99C1F1) : accent;
-  Color get scheduled => dark ? const Color(0xFFDC8ADD) : const Color(0xFF9141AC);
-  Color get completed => dark ? const Color(0xFFFFBE6F) : const Color(0xFFFF7800);
+  Color get scheduled =>
+      dark ? const Color(0xFFDC8ADD) : const Color(0xFF9141AC);
+  Color get completed =>
+      dark ? const Color(0xFFFFBE6F) : const Color(0xFFFF7800);
 
   // Item priority 4 = P1 ... 1 = none (stylesheet.css .priority-N-color).
   Color priority(int p) => switch (p) {
-        4 => const Color(0xFFFF7066),
-        3 => const Color(0xFFFF9A14),
-        2 => const Color(0xFF5297FF),
-        _ => dark ? Colors.white38 : Colors.black38,
-      };
+    4 => const Color(0xFFFF7066),
+    3 => const Color(0xFFFF9A14),
+    2 => const Color(0xFF5297FF),
+    _ => dark ? Colors.white38 : Colors.black38,
+  };
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final state = AppState(await Db.open());
   await state.load();
+  state.syncNow();
+  AppLifecycleListener(onResume: state.syncNow);
   runApp(PlanifyApp(state: state));
 }
 
@@ -83,38 +91,69 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Reload after a local edit and push it to the server.
+  Future<void> _changed() async {
+    await load();
+    syncNow();
+  }
+
+  bool syncing = false, _again = false;
+  String? syncError;
+
+  Future<void> syncNow() async {
+    if (syncing) {
+      _again = true;
+      return;
+    }
+    syncing = true;
+    notifyListeners();
+    try {
+      do {
+        _again = false;
+        syncError = await syncOnce(db, {
+          for (final e in projectColors.entries) e.key: e.value.toARGB32(),
+        });
+      } while (_again);
+    } finally {
+      syncing = false;
+      await load();
+    }
+  }
+
   int count(TaskView v) => itemsFor(v, items, DateTime.now()).length;
 
   bool get hasOverdue {
     final today = dateOnly(DateTime.now());
-    return items.any((i) => !i.checked && i.due != null && i.due!.isBefore(today));
+    return items.any(
+      (i) => !i.checked && i.due != null && i.due!.isBefore(today),
+    );
   }
 
   Future<void> toggle(Item i) async {
     i.checked = !i.checked;
     i.completedAt = i.checked ? DateTime.now() : null;
     await db.saveItem(i);
-    await load();
+    await _changed();
   }
 
   Future<void> saveItem(Item i) async {
     await db.saveItem(i);
-    await load();
+    await _changed();
   }
 
   Future<void> deleteItem(Item i) async {
     await db.deleteItem(i.id);
-    await load();
+    await _changed();
   }
 
   Future<void> saveProject(Project p) async {
     await db.saveProject(p);
-    await load();
+    await _changed();
   }
 
   Future<void> deleteProject(Project p) async {
     await db.deleteProject(p.id);
-    await load();
+    await _changed();
   }
 }
 
@@ -127,7 +166,12 @@ class PlanifyApp extends StatelessWidget {
     final base = ThemeData(
       brightness: b,
       fontFamily: 'Inter',
-      colorScheme: ColorScheme.fromSeed(seedColor: accent, brightness: b, primary: accent, surface: pal.window),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: accent,
+        brightness: b,
+        primary: accent,
+        surface: pal.window,
+      ),
       scaffoldBackgroundColor: pal.window,
       dividerColor: pal.border,
     );
@@ -137,12 +181,24 @@ class PlanifyApp extends StatelessWidget {
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         titleSpacing: 4,
-        titleTextStyle: base.textTheme.titleMedium!.copyWith(fontFamily: 'Inter', fontWeight: FontWeight.w700),
+        titleTextStyle: base.textTheme.titleMedium!.copyWith(
+          fontFamily: 'Inter',
+          fontWeight: FontWeight.w700,
+        ),
       ),
       dividerTheme: DividerThemeData(color: pal.border, thickness: 1, space: 1),
-      bottomSheetTheme: BottomSheetThemeData(backgroundColor: pal.popover, surfaceTintColor: Colors.transparent),
-      dialogTheme: DialogThemeData(backgroundColor: pal.popover, surfaceTintColor: Colors.transparent),
-      popupMenuTheme: PopupMenuThemeData(color: pal.popover, surfaceTintColor: Colors.transparent),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: pal.popover,
+        surfaceTintColor: Colors.transparent,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: pal.popover,
+        surfaceTintColor: Colors.transparent,
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: pal.popover,
+        surfaceTintColor: Colors.transparent,
+      ),
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: accent,
         foregroundColor: Colors.white,
@@ -154,12 +210,12 @@ class PlanifyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Planify',
-        debugShowCheckedModeBanner: false,
-        theme: _theme(Brightness.light),
-        darkTheme: _theme(Brightness.dark),
-        home: HomeShell(state: state),
-      );
+    title: 'Planify',
+    debugShowCheckedModeBanner: false,
+    theme: _theme(Brightness.light),
+    darkTheme: _theme(Brightness.dark),
+    home: HomeShell(state: state),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -175,13 +231,16 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   final _nav = GlobalKey<NavigatorState>();
-  int? _tab; // the tab whose page is open; null on the projects page or a project
+  int?
+  _tab; // the tab whose page is open; null on the projects page or a project
   late final _observer = _TabObserver(() => setState(() => _tab = null));
 
   void _select(int i, TaskView v) {
     setState(() => _tab = i);
     _nav.currentState!.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => TaskListPage(state: widget.state, view: v)),
+      MaterialPageRoute(
+        builder: (_) => TaskListPage(state: widget.state, view: v),
+      ),
       (r) => r.isFirst,
     );
   }
@@ -191,16 +250,40 @@ class _HomeShellState extends State<HomeShell> {
     final pal = Pal.of(context);
     final state = widget.state;
     return Scaffold(
-      extendBody: true, // pages scroll under the translucent, blurred bar, as on iOS
+      extendBody:
+          true, // pages scroll under the translucent, blurred bar, as on iOS
       bottomNavigationBar: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
           final List<(IconData, IconData, String, Color, TaskView)> tabs = [
-            (CupertinoIcons.tray, CupertinoIcons.tray_fill, 'Inbox', pal.inbox, ProjectView(state.inbox.id)),
-            (CupertinoIcons.star, CupertinoIcons.star_fill, 'Today', todayColor, const TodayView()),
-            (CupertinoIcons.calendar, CupertinoIcons.calendar, 'Scheduled', pal.scheduled, const ScheduledView()),
-            (CupertinoIcons.checkmark_circle, CupertinoIcons.checkmark_circle_fill, 'Completed', pal.completed,
-                const CompletedView()),
+            (
+              CupertinoIcons.tray,
+              CupertinoIcons.tray_fill,
+              'Inbox',
+              pal.inbox,
+              ProjectView(state.inbox.id),
+            ),
+            (
+              CupertinoIcons.star,
+              CupertinoIcons.star_fill,
+              'Today',
+              todayColor,
+              const TodayView(),
+            ),
+            (
+              CupertinoIcons.calendar,
+              CupertinoIcons.calendar,
+              'Scheduled',
+              pal.scheduled,
+              const ScheduledView(),
+            ),
+            (
+              CupertinoIcons.checkmark_circle,
+              CupertinoIcons.checkmark_circle_fill,
+              'Completed',
+              pal.completed,
+              const CompletedView(),
+            ),
           ];
           // iOS badges are red; completed tasks need no attention, so that tab gets none.
           Widget badged(IconData icon, TaskView view) {
@@ -224,7 +307,13 @@ class _HomeShellState extends State<HomeShell> {
               decoration: BoxDecoration(
                 borderRadius: radius,
                 border: Border.all(color: pal.border, width: 0.5),
-                boxShadow: const [BoxShadow(color: Color(0x40000000), blurRadius: 24, offset: Offset(0, 8))],
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x40000000),
+                    blurRadius: 24,
+                    offset: Offset(0, 8),
+                  ),
+                ],
               ),
               child: ClipRRect(
                 borderRadius: radius,
@@ -243,11 +332,15 @@ class _HomeShellState extends State<HomeShell> {
                     iconSize: 26,
                     onTap: (i) => _select(i, tabs[i].$5),
                     items: [
-                      for (final (i, (icon, activeIcon, label, _, view)) in tabs.indexed)
+                      for (final (i, (icon, activeIcon, label, _, view))
+                          in tabs.indexed)
                         BottomNavigationBarItem(
                           label: label,
                           icon: badged(icon, view),
-                          activeIcon: badged(_tab == i ? activeIcon : icon, view),
+                          activeIcon: badged(
+                            _tab == i ? activeIcon : icon,
+                            view,
+                          ),
                         ),
                     ],
                   ),
@@ -263,7 +356,8 @@ class _HomeShellState extends State<HomeShell> {
         child: Navigator(
           key: _nav,
           observers: [_observer],
-          onGenerateRoute: (_) => MaterialPageRoute(builder: (_) => SidebarPage(state: state)),
+          onGenerateRoute: (_) =>
+              MaterialPageRoute(builder: (_) => SidebarPage(state: state)),
         ),
       ),
     );
@@ -288,8 +382,12 @@ class SidebarPage extends StatelessWidget {
   final AppState state;
   const SidebarPage({super.key, required this.state});
 
-  void _open(BuildContext context, TaskView v) =>
-      Navigator.push(context, MaterialPageRoute(builder: (_) => TaskListPage(state: state, view: v)));
+  void _open(BuildContext context, TaskView v) => Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => TaskListPage(state: state, view: v),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -297,48 +395,104 @@ class SidebarPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: pal.sidebar,
       body: SafeArea(
-        bottom: false, // the list scrolls under the tab bar; its padding clears it
+        bottom:
+            false, // the list scrolls under the tab bar; its padding clears it
         child: ListenableBuilder(
           listenable: state,
           builder: (context, _) {
             final projects = state.projects.where((p) => !p.inbox).toList();
-            return ListView(
-              padding: EdgeInsets.fromLTRB(12, 4, 12, 24 + MediaQuery.paddingOf(context).bottom),
-              children: [
-                SectionHeader(
-                  title: 'On This Device',
-                  trailing: IconButton(
-                    tooltip: 'Add project',
-                    icon: const Icon(Icons.add, size: 22),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () async {
-                      final p = await editProject(context, state);
-                      if (p != null && context.mounted) _open(context, ProjectView(p.id));
-                    },
-                  ),
+            return RefreshIndicator(
+              onRefresh: state.syncNow,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(
+                  12,
+                  4,
+                  12,
+                  24 + MediaQuery.paddingOf(context).bottom,
                 ),
-                if (projects.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text('No projects yet', style: TextStyle(color: pal.dim)),
-                  ),
-                for (final p in projects)
-                  InkWell(
-                    borderRadius: BorderRadius.circular(9),
-                    onTap: () => _open(context, ProjectView(p.id)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
-                      child: Row(children: [
-                        ProjectDot(color: projectColors[p.color] ?? accent),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(p.name, style: const TextStyle(fontSize: 15))),
-                        Text(_countLabel(state.count(ProjectView(p.id))),
-                            style: TextStyle(fontSize: 12, color: pal.dim)),
-                        const SizedBox(width: 8),
-                      ]),
+                children: [
+                  SectionHeader(
+                    title: 'On This Device',
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Sync',
+                          icon: state.syncing
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Icon(
+                                  state.syncError == null
+                                      ? Icons.cloud_outlined
+                                      : Icons.cloud_off_outlined,
+                                  size: 20,
+                                  color: state.syncError == null
+                                      ? null
+                                      : destructive,
+                                ),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => showDialog(
+                            context: context,
+                            builder: (_) => SyncDialog(state: state),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Add project',
+                          icon: const Icon(Icons.add, size: 22),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () async {
+                            final p = await editProject(context, state);
+                            if (p != null && context.mounted)
+                              _open(context, ProjectView(p.id));
+                          },
+                        ),
+                      ],
                     ),
                   ),
-              ],
+                  if (projects.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        'No projects yet',
+                        style: TextStyle(color: pal.dim),
+                      ),
+                    ),
+                  for (final p in projects)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(9),
+                      onTap: () => _open(context, ProjectView(p.id)),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 9,
+                        ),
+                        child: Row(
+                          children: [
+                            ProjectDot(color: projectColors[p.color] ?? accent),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                p.name,
+                                style: const TextStyle(fontSize: 15),
+                              ),
+                            ),
+                            Text(
+                              _countLabel(state.count(ProjectView(p.id))),
+                              style: TextStyle(fontSize: 12, color: pal.dim),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             );
           },
         ),
@@ -357,12 +511,17 @@ class ProjectDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        width: size,
-        height: size,
-        padding: const EdgeInsets.all(2.5),
-        decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: color, width: 2)),
-        child: DecoratedBox(decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-      );
+    width: size,
+    height: size,
+    padding: const EdgeInsets.all(2.5),
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      border: Border.all(color: color, width: 2),
+    ),
+    child: DecoratedBox(
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    ),
+  );
 }
 
 class SectionHeader extends StatelessWidget {
@@ -372,22 +531,30 @@ class SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(
-            height: 40,
-            child: Row(children: [
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SizedBox(
+        height: 40,
+        child: Row(
+          children: [
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                ),
               ),
-              ?trailing,
-            ]),
-          ),
-          const Divider(),
-          const SizedBox(height: 4),
-        ],
-      );
+            ),
+            ?trailing,
+          ],
+        ),
+      ),
+      const Divider(),
+      const SizedBox(height: 4),
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -412,11 +579,15 @@ class _TaskListPageState extends State<TaskListPage> {
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      useRootNavigator: true, // above the tab bar, which lives outside the nested navigator
+      useRootNavigator:
+          true, // above the tab bar, which lives outside the nested navigator
       builder: (_) => ItemEditor(
         item: item,
         projects: state.projects,
-        defaultProjectId: switch (view) { ProjectView(:final projectId) => projectId, _ => state.inbox.id },
+        defaultProjectId: switch (view) {
+          ProjectView(:final projectId) => projectId,
+          _ => state.inbox.id,
+        },
         defaultDue: view is TodayView ? dateOnly(DateTime.now()) : null,
       ),
     );
@@ -435,7 +606,10 @@ class _TaskListPageState extends State<TaskListPage> {
         title: Text('Delete "${p.name}"?'),
         content: const Text('All of its tasks will be deleted too.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: destructive),
             onPressed: () => Navigator.pop(c, true),
@@ -467,54 +641,93 @@ class _TaskListPageState extends State<TaskListPage> {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        final project = switch (view) { ProjectView(:final projectId) => state.project(projectId), _ => null };
+        final project = switch (view) {
+          ProjectView(:final projectId) => state.project(projectId),
+          _ => null,
+        };
         // Project was deleted while this page was open.
         if (view is ProjectView && project == null) return const Scaffold();
 
         final now = DateTime.now();
-        final groups = groupItems(view, itemsFor(view, state.items, now, showCompleted: showCompleted), now);
+        final groups = groupItems(
+          view,
+          itemsFor(view, state.items, now, showCompleted: showCompleted),
+          now,
+        );
         final (title, icon, iconColor) = switch (view) {
           TodayView() => ('Today', Icons.star_border_rounded, todayColor),
-          ScheduledView() => ('Scheduled', Icons.calendar_month_outlined, pal.scheduled),
-          CompletedView() => ('Completed', Icons.task_alt_rounded, pal.completed),
-          ProjectView() when project!.inbox => ('Inbox', Icons.inbox_outlined, pal.inbox),
+          ScheduledView() => (
+            'Scheduled',
+            Icons.calendar_month_outlined,
+            pal.scheduled,
+          ),
+          CompletedView() => (
+            'Completed',
+            Icons.task_alt_rounded,
+            pal.completed,
+          ),
+          ProjectView() when project!.inbox => (
+            'Inbox',
+            Icons.inbox_outlined,
+            pal.inbox,
+          ),
           ProjectView() => (project!.name, null, null),
         };
 
         return Scaffold(
           appBar: AppBar(
-            title: Row(children: [
-              if (icon != null)
-                Icon(icon, color: iconColor, size: 20)
-              else
-                ProjectDot(color: projectColors[project!.color] ?? accent),
-              const SizedBox(width: 10),
-              Flexible(child: Text(title, overflow: TextOverflow.ellipsis)),
-              if (view is TodayView) ...[
-                const SizedBox(width: 8),
-                Text(loc.formatShortMonthDay(now),
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: pal.dim)),
+            title: Row(
+              children: [
+                if (icon != null)
+                  Icon(icon, color: iconColor, size: 20)
+                else
+                  ProjectDot(color: projectColors[project!.color] ?? accent),
+                const SizedBox(width: 10),
+                Flexible(child: Text(title, overflow: TextOverflow.ellipsis)),
+                if (view is TodayView) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    loc.formatShortMonthDay(now),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: pal.dim,
+                    ),
+                  ),
+                ],
               ],
-            ]),
+            ),
             actions: [
               if (view is! CompletedView)
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert),
                   onSelected: (v) => switch (v) {
-                    'completed' => setState(() => showCompleted = !showCompleted),
+                    'completed' => setState(
+                      () => showCompleted = !showCompleted,
+                    ),
                     'edit' => editProject(context, state, project),
                     _ => _deleteProject(project!),
                   },
                   itemBuilder: (_) => [
                     PopupMenuItem(
                       value: 'completed',
-                      child: Text(showCompleted ? 'Hide completed tasks' : 'Show completed tasks'),
+                      child: Text(
+                        showCompleted
+                            ? 'Hide completed tasks'
+                            : 'Show completed tasks',
+                      ),
                     ),
                     if (project != null && !project.inbox) ...[
-                      const PopupMenuItem(value: 'edit', child: Text('Edit project')),
+                      const PopupMenuItem(
+                        value: 'edit',
+                        child: Text('Edit project'),
+                      ),
                       const PopupMenuItem(
                         value: 'delete',
-                        child: Text('Delete project', style: TextStyle(color: destructive)),
+                        child: Text(
+                          'Delete project',
+                          style: TextStyle(color: destructive),
+                        ),
                       ),
                     ],
                   ],
@@ -524,7 +737,12 @@ class _TaskListPageState extends State<TaskListPage> {
           body: groups.isEmpty
               ? EmptyState(view: view)
               : ListView(
-                  padding: EdgeInsets.fromLTRB(12, 4, 12, 96 + MediaQuery.paddingOf(context).bottom),
+                  padding: EdgeInsets.fromLTRB(
+                    12,
+                    4,
+                    12,
+                    96 + MediaQuery.paddingOf(context).bottom,
+                  ),
                   children: [
                     for (final (key, items) in groups) ...[
                       if (key != null) ...[
@@ -534,7 +752,9 @@ class _TaskListPageState extends State<TaskListPage> {
                       for (final i in items)
                         ItemRow(
                           item: i,
-                          projectName: view is ProjectView ? null : state.project(i.projectId)?.name,
+                          projectName: view is ProjectView
+                              ? null
+                              : state.project(i.projectId)?.name,
                           // Scheduled/Completed headers already say the day.
                           showDue: view is ProjectView || view is TodayView,
                           onToggle: () => state.toggle(i),
@@ -547,8 +767,14 @@ class _TaskListPageState extends State<TaskListPage> {
               ? null
               // Lift the button above the translucent tab bar the page extends under.
               : Padding(
-                  padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
-                  child: FloatingActionButton(tooltip: 'Add task', onPressed: _editItem, child: const Icon(Icons.add)),
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.paddingOf(context).bottom,
+                  ),
+                  child: FloatingActionButton(
+                    tooltip: 'Add task',
+                    onPressed: _editItem,
+                    child: const Icon(Icons.add),
+                  ),
                 ),
         );
       },
@@ -557,8 +783,11 @@ class _TaskListPageState extends State<TaskListPage> {
 }
 
 // UTC so a DST shift (23h day) does not round to the wrong day.
-int daysBetween(DateTime from, DateTime to) =>
-    DateTime.utc(to.year, to.month, to.day).difference(DateTime.utc(from.year, from.month, from.day)).inDays;
+int daysBetween(DateTime from, DateTime to) => DateTime.utc(
+  to.year,
+  to.month,
+  to.day,
+).difference(DateTime.utc(from.year, from.month, from.day)).inDays;
 
 class EmptyState extends StatelessWidget {
   final TaskView view;
@@ -574,11 +803,14 @@ class EmptyState extends StatelessWidget {
       ProjectView() => (Icons.checklist_rounded, 'Press + to add a task'),
     };
     return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 48, color: pal.dim),
-        const SizedBox(height: 12),
-        Text(text, style: TextStyle(color: pal.dim)),
-      ]),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 48, color: pal.dim),
+          const SizedBox(height: 12),
+          Text(text, style: TextStyle(color: pal.dim)),
+        ],
+      ),
     );
   }
 }
@@ -608,35 +840,49 @@ class ItemRow extends StatelessWidget {
       onTap: onTap,
       child: ConstrainedBox(
         constraints: const BoxConstraints(minHeight: 40),
-        child: Row(children: [
-          PlanifyCheck(checked: item.checked, color: pal.priority(item.priority), onTap: onToggle),
-          if (showDue && item.due != null && !item.checked) ...[
-            DueChip(due: item.due!),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                item.content,
-                style: item.checked
-                    ? TextStyle(fontSize: 15, color: pal.dim, decoration: TextDecoration.lineThrough)
-                    : const TextStyle(fontSize: 15),
+        child: Row(
+          children: [
+            PlanifyCheck(
+              checked: item.checked,
+              color: pal.priority(item.priority),
+              onTap: onToggle,
+            ),
+            if (showDue && item.due != null && !item.checked) ...[
+              DueChip(due: item.due!),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  item.content,
+                  style: item.checked
+                      ? TextStyle(
+                          fontSize: 15,
+                          color: pal.dim,
+                          decoration: TextDecoration.lineThrough,
+                        )
+                      : const TextStyle(fontSize: 15),
+                ),
               ),
             ),
-          ),
-          if (item.description.isNotEmpty) ...[
-            const SizedBox(width: 6),
-            Icon(Icons.notes_rounded, size: 16, color: pal.dim),
+            if (item.description.isNotEmpty) ...[
+              const SizedBox(width: 6),
+              Icon(Icons.notes_rounded, size: 16, color: pal.dim),
+            ],
+            if (name != null) ...[
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 110),
+                child: Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: pal.dim),
+                ),
+              ),
+            ],
           ],
-          if (name != null) ...[
-            const SizedBox(width: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 110),
-              child: Text(name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: pal.dim)),
-            ),
-          ],
-        ]),
+        ),
       ),
     );
   }
@@ -647,36 +893,43 @@ class PlanifyCheck extends StatelessWidget {
   final bool checked;
   final Color color;
   final VoidCallback? onTap;
-  const PlanifyCheck({super.key, required this.checked, required this.color, this.onTap});
+  const PlanifyCheck({
+    super.key,
+    required this.checked,
+    required this.color,
+    this.onTap,
+  });
 
   static const _done = Color(0xFFFF7800);
 
   @override
   Widget build(BuildContext context) => Semantics(
-        checked: checked,
-        button: onTap != null,
-        child: InkResponse(
-          onTap: onTap,
-          radius: 20,
-          child: SizedBox(
-            width: 36,
-            height: 40,
-            child: Center(
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: 19,
-                height: 19,
-                decoration: BoxDecoration(
-                  color: checked ? _done : color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: checked ? _done : color, width: 2),
-                ),
-                child: checked ? const Icon(Icons.check_rounded, size: 14, color: Colors.white) : null,
-              ),
+    checked: checked,
+    button: onTap != null,
+    child: InkResponse(
+      onTap: onTap,
+      radius: 20,
+      child: SizedBox(
+        width: 36,
+        height: 40,
+        child: Center(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 19,
+            height: 19,
+            decoration: BoxDecoration(
+              color: checked ? _done : color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: checked ? _done : color, width: 2),
             ),
+            child: checked
+                ? const Icon(Icons.check_rounded, size: 14, color: Colors.white)
+                : null,
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// Date pill: green for today, red when overdue, grey otherwise.
@@ -691,8 +944,8 @@ class DueChip extends StatelessWidget {
     final (fg, bg) = diff == 0
         ? (todayChip, todayChip.withValues(alpha: 0.15))
         : diff < 0
-            ? (overdueColor, overdueColor.withValues(alpha: 0.125))
-            : (pal.upcomingFg, pal.upcomingBg);
+        ? (overdueColor, overdueColor.withValues(alpha: 0.125))
+        : (pal.upcomingFg, pal.upcomingBg);
     final label = switch (diff) {
       0 => 'Today',
       1 => 'Tomorrow',
@@ -701,8 +954,14 @@ class DueChip extends StatelessWidget {
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
-      child: Text(label, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w500)),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w500),
+      ),
     );
   }
 }
@@ -714,9 +973,7 @@ class _ItemEdit {
   final Item? item;
   final bool delete;
   _ItemEdit.save(this.item) : delete = false;
-  _ItemEdit.delete()
-      : item = null,
-        delete = true;
+  _ItemEdit.delete() : item = null, delete = true;
 }
 
 class ItemEditor extends StatefulWidget {
@@ -741,7 +998,10 @@ class ItemEditor extends StatefulWidget {
 /// Same markdown as the desktop MarkdownEditor (handle_list_enter).
 TextEditingValue continueBullet(TextEditingValue old, TextEditingValue value) {
   final at = value.selection.baseOffset;
-  final typedNewline = value.text.length == old.text.length + 1 && at > 0 && value.text[at - 1] == '\n' &&
+  final typedNewline =
+      value.text.length == old.text.length + 1 &&
+      at > 0 &&
+      value.text[at - 1] == '\n' &&
       value.text.replaceRange(at - 1, at, '') == old.text;
   if (!typedNewline) return value;
   final lineStart = value.text.lastIndexOf('\n', at - 2) + 1;
@@ -749,16 +1009,23 @@ TextEditingValue continueBullet(TextEditingValue old, TextEditingValue value) {
   if (!line.startsWith('- ') && !line.startsWith('• ')) return value;
   if (line.substring(2).trim().isEmpty) {
     return TextEditingValue(
-        text: value.text.replaceRange(lineStart, at, ''), selection: TextSelection.collapsed(offset: lineStart));
+      text: value.text.replaceRange(lineStart, at, ''),
+      selection: TextSelection.collapsed(offset: lineStart),
+    );
   }
   return TextEditingValue(
-      text: value.text.replaceRange(at, at, '- '), selection: TextSelection.collapsed(offset: at + 2));
+    text: value.text.replaceRange(at, at, '- '),
+    selection: TextSelection.collapsed(offset: at + 2),
+  );
 }
 
 class _ItemEditorState extends State<ItemEditor> {
   late final content = TextEditingController(text: widget.item?.content);
-  late final description = TextEditingController(text: widget.item?.description);
-  late DateTime? due = widget.item?.due ?? (widget.item == null ? widget.defaultDue : null);
+  late final description = TextEditingController(
+    text: widget.item?.description,
+  );
+  late DateTime? due =
+      widget.item?.due ?? (widget.item == null ? widget.defaultDue : null);
   late int priority = widget.item?.priority ?? 1;
   late String projectId = widget.item?.projectId ?? widget.defaultProjectId;
 
@@ -772,7 +1039,8 @@ class _ItemEditorState extends State<ItemEditor> {
   void _save() {
     final text = content.text.trim();
     if (text.isEmpty) return;
-    final i = widget.item ?? Item(id: newId(), content: text, projectId: projectId);
+    final i =
+        widget.item ?? Item(id: newId(), content: text, projectId: projectId);
     i
       ..content = text
       ..description = description.text.trim()
@@ -803,30 +1071,48 @@ class _ItemEditorState extends State<ItemEditor> {
     final project = widget.projects.firstWhere((p) => p.id == projectId);
     return Padding(
       // Keyboard height, or the gesture-nav bar when the keyboard is closed.
-      padding: EdgeInsets.fromLTRB(16, 0, 16,
-          12 + [MediaQuery.viewInsetsOf(context).bottom, MediaQuery.viewPaddingOf(context).bottom].reduce((a, b) => a > b ? a : b)),
+      padding: EdgeInsets.fromLTRB(
+        16,
+        0,
+        16,
+        12 +
+            [
+              MediaQuery.viewInsetsOf(context).bottom,
+              MediaQuery.viewPaddingOf(context).bottom,
+            ].reduce((a, b) => a > b ? a : b),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(children: [
-            PlanifyCheck(checked: false, color: pal.priority(priority)),
-            Expanded(
-              child: TextField(
-                controller: content,
-                autofocus: widget.item == null,
-                decoration: const InputDecoration(hintText: 'To-do name', border: InputBorder.none),
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _save(),
+          Row(
+            children: [
+              PlanifyCheck(checked: false, color: pal.priority(priority)),
+              Expanded(
+                child: TextField(
+                  controller: content,
+                  autofocus: widget.item == null,
+                  decoration: const InputDecoration(
+                    hintText: 'To-do name',
+                    border: InputBorder.none,
+                  ),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _save(),
+                ),
               ),
-            ),
-          ]),
+            ],
+          ),
           Padding(
             padding: const EdgeInsets.only(left: 36),
             child: TextField(
               controller: description,
-              inputFormatters: [TextInputFormatter.withFunction(continueBullet)],
+              inputFormatters: [
+                TextInputFormatter.withFunction(continueBullet),
+              ],
               decoration: InputDecoration(
                 hintText: 'Add a description…',
                 border: InputBorder.none,
@@ -837,68 +1123,98 @@ class _ItemEditorState extends State<ItemEditor> {
             ),
           ),
           const SizedBox(height: 8),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            ToolButton(
-              icon: Icons.calendar_today_outlined,
-              iconColor: due == null ? null : todayChip,
-              label: due == null ? 'Schedule' : MaterialLocalizations.of(context).formatMediumDate(due!),
-              onTap: _pickDate,
-              onClear: due == null ? null : () => setState(() => due = null),
-            ),
-            PopupMenuButton<int>(
-              tooltip: 'Priority',
-              initialValue: priority,
-              onSelected: (v) => setState(() => priority = v),
-              itemBuilder: (_) => [
-                for (final p in [4, 3, 2, 1])
-                  PopupMenuItem(
-                    value: p,
-                    child: Row(children: [
-                      Icon(p == 1 ? Icons.outlined_flag : Icons.flag, color: pal.priority(p), size: 20),
-                      const SizedBox(width: 10),
-                      Text(p == 1 ? 'None' : 'Priority ${5 - p}'),
-                    ]),
-                  ),
-              ],
-              child: ToolButton(
-                icon: priority == 1 ? Icons.outlined_flag : Icons.flag,
-                iconColor: priority == 1 ? null : pal.priority(priority),
-                label: priority == 1 ? 'Priority' : 'P${5 - priority}',
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ToolButton(
+                icon: Icons.calendar_today_outlined,
+                iconColor: due == null ? null : todayChip,
+                label: due == null
+                    ? 'Schedule'
+                    : MaterialLocalizations.of(context).formatMediumDate(due!),
+                onTap: _pickDate,
+                onClear: due == null ? null : () => setState(() => due = null),
               ),
-            ),
-            PopupMenuButton<String>(
-              tooltip: 'Project',
-              initialValue: projectId,
-              onSelected: (v) => setState(() => projectId = v),
-              itemBuilder: (_) => [
-                for (final p in widget.projects)
-                  PopupMenuItem(
-                    value: p.id,
-                    child: Row(children: [_projectIcon(p, pal, 16), const SizedBox(width: 10), Text(p.name)]),
-                  ),
-              ],
-              child: ToolButton(leading: _projectIcon(project, pal, 14), label: project.name),
-            ),
-          ]),
+              PopupMenuButton<int>(
+                tooltip: 'Priority',
+                initialValue: priority,
+                onSelected: (v) => setState(() => priority = v),
+                itemBuilder: (_) => [
+                  for (final p in [4, 3, 2, 1])
+                    PopupMenuItem(
+                      value: p,
+                      child: Row(
+                        children: [
+                          Icon(
+                            p == 1 ? Icons.outlined_flag : Icons.flag,
+                            color: pal.priority(p),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Text(p == 1 ? 'None' : 'Priority ${5 - p}'),
+                        ],
+                      ),
+                    ),
+                ],
+                child: ToolButton(
+                  icon: priority == 1 ? Icons.outlined_flag : Icons.flag,
+                  iconColor: priority == 1 ? null : pal.priority(priority),
+                  label: priority == 1 ? 'Priority' : 'P${5 - priority}',
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Project',
+                initialValue: projectId,
+                onSelected: (v) => setState(() => projectId = v),
+                itemBuilder: (_) => [
+                  for (final p in widget.projects)
+                    PopupMenuItem(
+                      value: p.id,
+                      child: Row(
+                        children: [
+                          _projectIcon(p, pal, 16),
+                          const SizedBox(width: 10),
+                          Text(p.name),
+                        ],
+                      ),
+                    ),
+                ],
+                child: ToolButton(
+                  leading: _projectIcon(project, pal, 14),
+                  label: project.name,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 12),
           const Divider(),
           const SizedBox(height: 8),
-          Row(children: [
-            if (widget.item != null)
-              IconButton(
-                tooltip: 'Delete',
-                icon: const Icon(Icons.delete_outline, color: destructive),
-                onPressed: () => Navigator.pop(context, _ItemEdit.delete()),
+          Row(
+            children: [
+              if (widget.item != null)
+                IconButton(
+                  tooltip: 'Delete',
+                  icon: const Icon(Icons.delete_outline, color: destructive),
+                  onPressed: () => Navigator.pop(context, _ItemEdit.delete()),
+                ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
               ),
-            const Spacer(),
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            const SizedBox(width: 8),
-            FilledButton(
-              style: FilledButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9))),
-              onPressed: _save,
-              child: Text(widget.item == null ? 'Add To-Do' : 'Save'),
-            ),
-          ]),
+              const SizedBox(width: 8),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                ),
+                onPressed: _save,
+                child: Text(widget.item == null ? 'Add To-Do' : 'Save'),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -914,30 +1230,63 @@ class ToolButton extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onClear;
 
-  const ToolButton({super.key, this.icon, this.leading, this.iconColor, required this.label, this.onTap, this.onClear});
+  const ToolButton({
+    super.key,
+    this.icon,
+    this.leading,
+    this.iconColor,
+    required this.label,
+    this.onTap,
+    this.onClear,
+  });
 
   @override
   Widget build(BuildContext context) {
     final pal = Pal.of(context);
     final body = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(border: Border.all(color: pal.border), borderRadius: BorderRadius.circular(9)),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        leading ?? Icon(icon, size: 18, color: iconColor ?? pal.dim),
-        const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-        if (onClear != null) ...[
-          const SizedBox(width: 4),
-          GestureDetector(onTap: onClear, child: Icon(Icons.close, size: 16, color: pal.dim)),
+      decoration: BoxDecoration(
+        border: Border.all(color: pal.border),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          leading ?? Icon(icon, size: 18, color: iconColor ?? pal.dim),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          ),
+          if (onClear != null) ...[
+            const SizedBox(width: 4),
+            GestureDetector(
+              onTap: onClear,
+              child: Icon(Icons.close, size: 16, color: pal.dim),
+            ),
+          ],
         ],
-      ]),
+      ),
     );
-    return onTap == null ? body : InkWell(borderRadius: BorderRadius.circular(9), onTap: onTap, child: body);
+    return onTap == null
+        ? body
+        : InkWell(
+            borderRadius: BorderRadius.circular(9),
+            onTap: onTap,
+            child: body,
+          );
   }
 }
 
-Future<Project?> editProject(BuildContext context, AppState state, [Project? project]) async {
-  final p = await showDialog<Project>(context: context, builder: (_) => ProjectDialog(project: project));
+Future<Project?> editProject(
+  BuildContext context,
+  AppState state, [
+  Project? project,
+]) async {
+  final p = await showDialog<Project>(
+    context: context,
+    builder: (_) => ProjectDialog(project: project),
+  );
   if (p != null) await state.saveProject(p);
   return p;
 }
@@ -953,7 +1302,9 @@ class ProjectDialog extends StatefulWidget {
 class _ProjectDialogState extends State<ProjectDialog> {
   late final name = TextEditingController(text: widget.project?.name);
   // Old projects may carry a color name that is not in the palette.
-  late String color = projectColors.containsKey(widget.project?.color) ? widget.project!.color : 'blue';
+  late String color = projectColors.containsKey(widget.project?.color)
+      ? widget.project!.color
+      : 'blue';
 
   @override
   void dispose() {
@@ -975,8 +1326,10 @@ class _ProjectDialogState extends State<ProjectDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      title: Text(widget.project == null ? 'New Project' : 'Edit Project',
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+      title: Text(
+        widget.project == null ? 'New Project' : 'Edit Project',
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+      ),
       content: SizedBox(
         width: 320,
         child: Column(
@@ -991,7 +1344,9 @@ class _ProjectDialogState extends State<ProjectDialog> {
                   padding: const EdgeInsets.all(14),
                   child: ProjectDot(color: projectColors[color]!, size: 16),
                 ),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(9)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(9),
+                ),
               ),
               onSubmitted: (_) => _save(),
             ),
@@ -1007,7 +1362,13 @@ class _ProjectDialogState extends State<ProjectDialog> {
                     child: CircleAvatar(
                       radius: 14,
                       backgroundColor: e.value,
-                      child: color == e.key ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
+                      child: color == e.key
+                          ? const Icon(
+                              Icons.check,
+                              color: Colors.white,
+                              size: 16,
+                            )
+                          : null,
                     ),
                   ),
               ],
@@ -1016,8 +1377,118 @@ class _ProjectDialogState extends State<ProjectDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
         FilledButton(onPressed: _save, child: const Text('Save')),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sync settings: a CalDAV account (Radicale on the home server, over Tailscale).
+
+class SyncDialog extends StatefulWidget {
+  final AppState state;
+  const SyncDialog({super.key, required this.state});
+
+  @override
+  State<SyncDialog> createState() => _SyncDialogState();
+}
+
+class _SyncDialogState extends State<SyncDialog> {
+  final url = TextEditingController(),
+      user = TextEditingController(),
+      password = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    final db = widget.state.db;
+    () async {
+      url.text =
+          await db.setting('url') ??
+          'https://personal-server.taild0d5c6.ts.net:5232/';
+      user.text = await db.setting('user') ?? '';
+      password.text = await db.setting('password') ?? '';
+    }();
+  }
+
+  @override
+  void dispose() {
+    url.dispose();
+    user.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final db = widget.state.db;
+    await db.setSetting('url', url.text.trim());
+    await db.setSetting('user', user.text.trim());
+    await db.setSetting('password', password.text);
+    await widget.state.syncNow();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    InputDecoration deco(String label) => InputDecoration(
+      labelText: label,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(9)),
+    );
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: const Text(
+        'Sync (CalDAV)',
+        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+      ),
+      content: SizedBox(
+        width: 320,
+        child: ListenableBuilder(
+          listenable: widget.state,
+          builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: url,
+                decoration: deco('Server URL'),
+                keyboardType: TextInputType.url,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: user,
+                decoration: deco('Username'),
+                autocorrect: false,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                decoration: deco('Password'),
+                obscureText: true,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                widget.state.syncing
+                    ? 'Syncing…'
+                    : widget.state.syncError ?? 'Up to date',
+                style: TextStyle(
+                  color: widget.state.syncError == null || widget.state.syncing
+                      ? Pal.of(context).dim
+                      : destructive,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('Save & Sync')),
       ],
     );
   }
