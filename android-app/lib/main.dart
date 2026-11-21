@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show TextInputFormatter;
 
 import 'db.dart';
 import 'models.dart';
+import 'settings.dart';
 import 'sync.dart';
 
 // Planify's project palette (core/Utils/Util.vala get_colors).
@@ -235,11 +236,13 @@ class _HomeShellState extends State<HomeShell> {
   _tab; // the tab whose page is open; null on the projects page or a project
   late final _observer = _TabObserver(() => setState(() => _tab = null));
 
-  void _select(int i, TaskView v) {
+  void _select(int i, TaskView? v) {
     setState(() => _tab = i);
     _nav.currentState!.pushAndRemoveUntil(
       MaterialPageRoute(
-        builder: (_) => TaskListPage(state: widget.state, view: v),
+        builder: (_) => v == null
+            ? SettingsPage(state: widget.state)
+            : TaskListPage(state: widget.state, view: v),
       ),
       (r) => r.isFirst,
     );
@@ -255,7 +258,8 @@ class _HomeShellState extends State<HomeShell> {
       bottomNavigationBar: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
-          final List<(IconData, IconData, String, Color, TaskView)> tabs = [
+          // A null view is the Settings tab.
+          final List<(IconData, IconData, String, Color, TaskView?)> tabs = [
             (
               CupertinoIcons.tray,
               CupertinoIcons.tray_fill,
@@ -284,10 +288,19 @@ class _HomeShellState extends State<HomeShell> {
               pal.completed,
               const CompletedView(),
             ),
+            (
+              CupertinoIcons.gear,
+              CupertinoIcons.gear_solid,
+              'Settings',
+              accent,
+              null,
+            ),
           ];
           // iOS badges are red; completed tasks need no attention, so that tab gets none.
-          Widget badged(IconData icon, TaskView view) {
-            final n = view is CompletedView ? 0 : state.count(view);
+          Widget badged(IconData icon, TaskView? view) {
+            final n = view == null || view is CompletedView
+                ? 0
+                : state.count(view);
             return Badge(
               label: Text('$n'),
               isLabelVisible: n > 0,
