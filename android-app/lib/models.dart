@@ -6,18 +6,25 @@ class Project {
   String name;
   String color;
   final bool inbox;
+  String? href; // CalDAV calendar path, once synced
 
-  Project({required this.id, required this.name, this.color = 'blue', this.inbox = false});
+  Project({required this.id, required this.name, this.color = 'blue', this.inbox = false, this.href});
 
-  Map<String, Object?> toMap() =>
-      {'id': id, 'name': name, 'color': color, 'inbox_project': inbox ? 1 : 0};
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'name': name,
+    'color': color,
+    'inbox_project': inbox ? 1 : 0,
+    'href': href,
+  };
 
   factory Project.fromMap(Map<String, Object?> m) => Project(
-        id: m['id'] as String,
-        name: m['name'] as String,
-        color: (m['color'] as String?) ?? 'blue',
-        inbox: m['inbox_project'] == 1,
-      );
+    id: m['id'] as String,
+    name: m['name'] as String,
+    color: (m['color'] as String?) ?? 'blue',
+    inbox: m['inbox_project'] == 1,
+    href: m['href'] as String?,
+  );
 }
 
 class Item {
@@ -30,6 +37,8 @@ class Item {
   bool checked;
   final DateTime addedAt;
   DateTime? completedAt;
+  String? href; // CalDAV resource path, once synced
+  String? ical; // last iCalendar from/to the server, to keep fields this app doesn't edit
 
   Item({
     required this.id,
@@ -41,31 +50,37 @@ class Item {
     this.checked = false,
     DateTime? addedAt,
     this.completedAt,
+    this.href,
+    this.ical,
   }) : addedAt = addedAt ?? DateTime.now();
 
   Map<String, Object?> toMap() => {
-        'id': id,
-        'content': content,
-        'description': description,
-        'due': due?.toIso8601String().substring(0, 10),
-        'project_id': projectId,
-        'priority': priority,
-        'checked': checked ? 1 : 0,
-        'added_at': addedAt.toIso8601String(),
-        'completed_at': completedAt?.toIso8601String(),
-      };
+    'id': id,
+    'content': content,
+    'description': description,
+    'due': due?.toIso8601String().substring(0, 10),
+    'project_id': projectId,
+    'priority': priority,
+    'checked': checked ? 1 : 0,
+    'added_at': addedAt.toIso8601String(),
+    'completed_at': completedAt?.toIso8601String(),
+    'href': href,
+    'ical': ical,
+  };
 
   factory Item.fromMap(Map<String, Object?> m) => Item(
-        id: m['id'] as String,
-        content: m['content'] as String,
-        description: (m['description'] as String?) ?? '',
-        due: m['due'] == null ? null : DateTime.parse(m['due'] as String),
-        projectId: m['project_id'] as String,
-        priority: (m['priority'] as int?) ?? 1,
-        checked: m['checked'] == 1,
-        addedAt: DateTime.parse(m['added_at'] as String),
-        completedAt: m['completed_at'] == null ? null : DateTime.parse(m['completed_at'] as String),
-      );
+    id: m['id'] as String,
+    content: m['content'] as String,
+    description: (m['description'] as String?) ?? '',
+    due: m['due'] == null ? null : DateTime.parse(m['due'] as String),
+    projectId: m['project_id'] as String,
+    priority: (m['priority'] as int?) ?? 1,
+    checked: m['checked'] == 1,
+    addedAt: DateTime.parse(m['added_at'] as String),
+    completedAt: m['completed_at'] == null ? null : DateTime.parse(m['completed_at'] as String),
+    href: m['href'] as String?,
+    ical: m['ical'] as String?,
+  );
 }
 
 /// What the task list is showing: Today, Scheduled, or one project.
@@ -127,11 +142,11 @@ List<Item> itemsFor(TaskView view, List<Item> all, DateTime now, {bool showCompl
 List<(Object?, List<Item>)> groupItems(TaskView view, List<Item> sorted, DateTime now) {
   final today = dateOnly(now);
   Object? key(Item i) => switch (view) {
-        TodayView() => i.due!.isBefore(today) ? 'overdue' : today,
-        ScheduledView() => i.due,
-        CompletedView() => dateOnly(i.completedAt ?? i.addedAt),
-        ProjectView() => null,
-      };
+    TodayView() => i.due!.isBefore(today) ? 'overdue' : today,
+    ScheduledView() => i.due,
+    CompletedView() => dateOnly(i.completedAt ?? i.addedAt),
+    ProjectView() => null,
+  };
   final groups = <(Object?, List<Item>)>[];
   for (final i in sorted) {
     final k = key(i);
